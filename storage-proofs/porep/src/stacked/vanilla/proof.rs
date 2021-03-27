@@ -1126,7 +1126,15 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             });
 
             s.spawn(move |_| {
-                let device_bus_id = devices[0].bus_id().unwrap();
+                let device_bus_id = {
+                    let mut id = 0;
+                    if devices.len() > 0 {
+                        id = devices[0].bus_id().unwrap();
+                    };
+
+                    id
+                };
+
                 if devices.len() == 1 {
                     if !settings::SETTINGS.tree_r_last_force_parallel {
                         wait_rx.recv().unwrap();
