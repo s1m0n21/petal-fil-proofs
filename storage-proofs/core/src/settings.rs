@@ -30,9 +30,7 @@ pub struct Settings {
     pub multicore_sdr_producers: usize,
     pub multicore_sdr_producer_stride: u64,
     pub multicore_sdr_lookahead: usize,
-    pub tree_c_force_parallel: bool,
-    pub tree_r_last_force_parallel: bool,
-    pub use_only_one_gpu: bool,
+    pub use_single_gpu: bool,
 }
 
 impl Default for Settings {
@@ -57,9 +55,7 @@ impl Default for Settings {
             multicore_sdr_producers: 3,
             multicore_sdr_producer_stride: 128,
             multicore_sdr_lookahead: 800,
-            tree_c_force_parallel: false,
-            tree_r_last_force_parallel: false,
-            use_only_one_gpu: false,
+            use_single_gpu: false,
         }
     }
 }

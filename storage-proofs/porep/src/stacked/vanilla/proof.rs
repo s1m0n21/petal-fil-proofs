@@ -1,8 +1,10 @@
-use std::fs::{OpenOptions, remove_file};
+use std::fs::{OpenOptions, File, remove_file, metadata};
 use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, RwLock};
+use std::thread::sleep;
+use std::time::Duration;
 
 use anyhow::Context;
 use bellperson::bls::Fr;
@@ -55,6 +57,8 @@ use rust_gpu_tools::opencl::{Device, GPUSelector, BusId};
 use crate::encode::{decode, encode};
 use crate::PoRep;
 use std::collections::HashMap;
+use fs2::FileExt;
+use rand::Rng;
 
 pub const TOTAL_PARENTS: usize = 37;
 
@@ -387,21 +391,6 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         TreeArity: PoseidonArity,
     {
         if settings::SETTINGS.use_gpu_column_builder {
-            let mut device_bus_ids = device_bus_ids;
-
-            let config_count = configs.len() - device_bus_ids.len();
-            if config_count > 0 {
-                for i in 0..config_count {
-                    device_bus_ids.push(device_bus_ids[i % device_bus_ids.len()])
-                };
-            };
-
-            if device_bus_ids.len() == 1 {
-                if settings::SETTINGS.tree_c_force_parallel {
-                    device_bus_ids.push(device_bus_ids[0]);
-                };
-            };
-
             Self::generate_tree_c_gpu::<ColumnArity, TreeArity>(
                 layers,
                 nodes_count,
@@ -458,12 +447,12 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             };
 
             rayon::scope(|s| {
-                let (tree_data_tx, tree_data_rx) = mpsc::sync_channel(configs.len());
+                let (writer_tx, writer_rx) = mpsc::channel();
 
                 for i in 0..parallel_num {
                     // This channel will receive batches of columns and add them to the ColumnTreeBuilder.
                     let (builder_tx, builder_rx) = mpsc::channel();
-                    let tree_data_tx = tree_data_tx.clone();
+                    let writer_tx = writer_tx.clone();
                     let configs = &config_slice[i];
                     let config_count = configs.len();
                     let bus_id = device_bus_ids[i];
@@ -542,7 +531,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                             ColumnArity,
                             TreeArity,
                         >::new(
-                            Some(BatcherType::CustomGPU(GPUSelector::BusId(bus_id))),
+                            Some(BatcherType::FromDevice(GPUSelector::BusId(bus_id).get_device().unwrap().clone())),
                             nodes_count,
                             max_gpu_column_batch_size,
                             max_gpu_tree_batch_size,
@@ -578,7 +567,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                             assert_eq!(base_data.len(), nodes_count);
                             assert_eq!(tree_len, configs.get(config_idx).unwrap().size.expect("config size failure"));
 
-                            tree_data_tx.send((base_data, tree_data, config_idx))
+                            writer_tx.send((base_data, tree_data, config_idx))
                                 .expect("send tree-data failed");
                             i += 1;
                         }
@@ -589,7 +578,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                 let mut i = 0 as usize;
                 while i < configs.len() {
                     let (base_data, tree_data, config_idx) =
-                        tree_data_rx.recv().expect("recv tree-data filed");
+                        writer_rx.recv().expect("recv tree-data filed");
                     let tree_len = base_data.len() + tree_data.len();
 
                     let config = configs[*config_idx].clone();
@@ -755,7 +744,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             let max_gpu_tree_batch_size = settings::SETTINGS.max_gpu_tree_batch_size as usize;
 
             // This channel will receive batches of leaf nodes and add them to the TreeBuilder.
-            let (builder_tx, builder_rx) = mpsc::sync_channel::<(Vec<Fr>, bool)>(0);
+            let (builder_tx, builder_rx) = mpsc::channel::<(Vec<Fr>, bool)>();
             let config_count = configs.len(); // Don't move config into closure below.
             let configs = &configs;
             rayon::scope(|s| {
@@ -823,7 +812,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                     let tree_r_last_config = &tree_r_last_config;
                     s.spawn(move |_| {
                         let mut tree_builder = TreeBuilder::<Tree::Arity>::new(
-                            Some(BatcherType::CustomGPU(GPUSelector::BusId(device_bus_id))),
+                            Some(BatcherType::FromDevice(GPUSelector::BusId(device_bus_id).get_device().unwrap().clone())),
                             nodes_count,
                             max_gpu_tree_batch_size,
                             tree_r_last_config.rows_to_discard,
@@ -960,6 +949,50 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         })?
         .0;
 
+        let devices = Device::all();
+        if settings::SETTINGS.use_single_gpu {
+            loop {
+                for d in &devices {
+                    let path = &format!("/var/tmp/fil-proofs.gpu.{}.lock", d.bus_id().unwrap());
+                    if metadata(path).is_ok() {
+                        let lock = File::open(path)?;
+
+                        if lock.try_lock_exclusive().is_ok() {
+                            let bus_id = d.bus_id().unwrap();
+                            trace!("Acquired GPU {} lock!", bus_id);
+
+                            let res = Self::transform_and_replicate_layers_inner(
+                                graph,
+                                layer_challenges,
+                                data,
+                                data_tree,
+                                config,
+                                replica_path,
+                                labels,
+                                vec![bus_id],
+                            ).context("failed to transform");
+
+                            lock.unlock()?;
+                            trace!("Released GPU {} lock!", bus_id);
+
+                            drop(lock);
+
+                            return res
+                        }
+                    } else {
+                        let _ = File::create(path)?;
+                    };
+                };
+
+                sleep(Duration::from_secs(5));
+            }
+        }
+
+        let mut bus_ids = vec![];
+        for dev in devices {
+            bus_ids.push(dev.bus_id().unwrap());
+        };
+
         Self::transform_and_replicate_layers_inner(
             graph,
             layer_challenges,
@@ -968,8 +1001,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             config,
             replica_path,
             labels,
-        )
-        .context("failed to transform")
+            bus_ids,
+        ).context("failed to transform")
     }
 
     pub(crate) fn transform_and_replicate_layers_inner(
@@ -980,6 +1013,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         config: StoreConfig,
         replica_path: PathBuf,
         label_configs: Labels<Tree>,
+        device_bus_ids: Vec<BusId>,
     ) -> Result<TransformedLayers<Tree, G>> {
         trace!("transform_and_replicate_layers");
         let nodes_count = graph.size();
@@ -1049,15 +1083,6 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             LabelsCache::<Tree>::new(&label_configs).context("failed to create labels cache")?;
         let configs = split_config(tree_c_config.clone(), tree_count)?;
 
-        let devices = &Device::all();
-
-        for device in devices {
-            trace!("device: {}, bus_id: {}, memory: {}",
-                   device.name(),
-                   device.bus_id().unwrap(),
-                   device.memory());
-        };
-
         let (tree_c_tx, tree_c_rx) =
             mpsc::sync_channel::<<<Tree as MerkleTreeTrait>::Hasher as Hasher>::Domain>(1);
         let (tree_d_tx, tree_d_rx) =
@@ -1065,19 +1090,14 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         let (tree_r_last_tx, tree_r_last_rx) =
             mpsc::sync_channel::<(<<Tree as MerkleTreeTrait>::Hasher as Hasher>::Domain, StoreConfig)>(1);
 
-        let (wait_tx, wait_rx) = mpsc::sync_channel::<bool>(1);
-
+        let device_bus_ids = &device_bus_ids;
         rayon::scope(|s| {
             let labels = &labels;
             s.spawn(move |_| {
-                let mut device_bus_ids = Vec::new();
-                if settings::SETTINGS.use_only_one_gpu {
-                    device_bus_ids.push(devices[0].bus_id().unwrap());
-                } else {
-                    for device in devices {
-                        device_bus_ids.push(device.bus_id().unwrap());
-                    };
-                }
+                let mut bus_ids = Vec::new();
+                for bus_id in device_bus_ids {
+                    bus_ids.push(bus_id);
+                };
 
                 let tree_c_root = match layers {
                     2 => {
@@ -1087,7 +1107,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                             tree_count,
                             configs,
                             labels,
-                            device_bus_ids,
+                            device_bus_ids.clone(),
                         ).expect("generate tree c failed");
                         tree_c.root()
                     }
@@ -1098,7 +1118,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                             tree_count,
                             configs,
                             labels,
-                            device_bus_ids,
+                            device_bus_ids.clone(),
                         ).expect("generate tree c failed");
                         tree_c.root()
                     }
@@ -1109,7 +1129,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                             tree_count,
                             configs,
                             labels,
-                            device_bus_ids,
+                            device_bus_ids.clone(),
                         ).expect("generate tree c failed");
                         tree_c.root()
                     }
@@ -1117,30 +1137,9 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                 };
                 tree_c_tx.send(tree_c_root).expect("send tree_c_root failed");
                 info!("tree_c done");
-
-                if devices.len() == 1 {
-                    if !settings::SETTINGS.tree_r_last_force_parallel {
-                        wait_tx.send(true).expect("send done failed");
-                    };
-                };
             });
 
             s.spawn(move |_| {
-                let device_bus_id = {
-                    let mut id = 0;
-                    if devices.len() > 0 {
-                        id = devices[0].bus_id().unwrap();
-                    };
-
-                    id
-                };
-
-                if devices.len() == 1 {
-                    if !settings::SETTINGS.tree_r_last_force_parallel {
-                        wait_rx.recv().unwrap();
-                    };
-                };
-
                 // Build the MerkleTree over the original data (if needed).
                 let tree_d = match data_tree {
                     Some(t) => {
@@ -1168,6 +1167,9 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                 tree_d_tx.send((tree_d_root, tree_d_config))
                     .expect("send tree_d_root failed");
 
+                let mut rng = rand::thread_rng();
+                let bus_id = device_bus_ids[rng.gen_range(0, device_bus_ids.len())];
+
                 // Encode original data into the last layer.
                 info!("building tree_r_last");
                 let tree_r_last = measure_op(GenerateTreeRLast, || {
@@ -1178,7 +1180,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                         tree_r_last_config.clone(),
                         replica_path.clone(),
                         &labels,
-                        device_bus_id,
+                        bus_id,
                     ).context("failed to generate tree_r_last")
                 }).expect("failed to generate tree_r_last");
                 info!("tree_r_last done");
@@ -1255,6 +1257,50 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
     )> {
         info!("replicate_phase2");
 
+        let devices = Device::all();
+        if settings::SETTINGS.use_single_gpu {
+            loop {
+                for d in &devices {
+                    let path = &format!("/var/tmp/fil-proofs.gpu.{}.lock", d.bus_id().unwrap());
+                    if metadata(path).is_ok() {
+                        let lock = File::open(path)?;
+
+                        if lock.try_lock_exclusive().is_ok() {
+                            let bus_id = d.bus_id().unwrap();
+                            trace!("Acquired GPU {} lock!", bus_id);
+
+                            let (tau, paux, taux) = Self::transform_and_replicate_layers_inner(
+                                &pp.graph,
+                                &pp.layer_challenges,
+                                data,
+                                Some(data_tree),
+                                config,
+                                replica_path,
+                                labels,
+                                vec![bus_id],
+                            )?;
+
+                            lock.unlock()?;
+                            trace!("Released GPU {} lock!", bus_id);
+
+                            drop(lock);
+
+                            return Ok((tau, (paux, taux)))
+                        }
+                    } else {
+                        let _ = File::create(path)?;
+                    };
+                };
+
+                sleep(Duration::from_secs(5));
+            };
+        }
+
+        let mut bus_ids = vec![];
+        for dev in devices {
+            bus_ids.push(dev.bus_id().unwrap());
+        }
+
         let (tau, paux, taux) = Self::transform_and_replicate_layers_inner(
             &pp.graph,
             &pp.layer_challenges,
@@ -1263,9 +1309,10 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             config,
             replica_path,
             labels,
+            bus_ids,
         )?;
 
-        Ok((tau, (paux, taux)))
+        return Ok((tau, (paux, taux)))
     }
 
     // Assumes data is all zeros.
@@ -1292,7 +1339,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             let max_gpu_tree_batch_size = settings::SETTINGS.max_gpu_tree_batch_size as usize;
 
             let mut tree_builder = TreeBuilder::<Tree::Arity>::new(
-                Some(BatcherType::GPU),
+                Some(BatcherType::OpenCL),
                 nodes_count,
                 max_gpu_tree_batch_size,
                 tree_r_last_config.rows_to_discard,
