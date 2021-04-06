@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use bellperson::bls::Fr;
@@ -484,19 +484,35 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                                 rayon::scope(|s| {
                                     // capture a shadowed version of layer_data.
                                     let layer_data: &mut Vec<_> = &mut layer_data;
+                                    let (element_tx, element_rx) = mpsc::channel();
 
-                                    // gather all layer data in parallel.
-                                    s.spawn(move |_| {
-                                        for (layer_index, layer_elements) in
-                                        layer_data.iter_mut().enumerate()
-                                        {
+                                    for layer_index in 0..layers {
+                                        let element_tx = element_tx.clone();
+                                        s.spawn(move |_| {
+                                            let now = Instant::now();
                                             let store = labels.labels_for_layer(layer_index + 1);
                                             let start = (index.clone() * nodes_count) + node_index;
                                             let end = start + chunked_nodes_count;
                                             let elements: Vec<<Tree::Hasher as Hasher>::Domain> = store
                                                 .read_range(std::ops::Range { start, end })
                                                 .expect("failed to read store range");
-                                            layer_elements.extend(elements.into_iter().map(Into::into));
+                                            trace!("read element chunk: {:?}", now.elapsed());
+
+                                            element_tx.send((layer_index, elements)).unwrap();
+                                        });
+                                    };
+
+                                    s.spawn(move |_| {
+                                        let mut elements = HashMap::new();
+                                        for _ in 0..layers {
+                                            let (layer_index, element) = element_rx.recv().unwrap();
+                                            elements.insert(layer_index, element).unwrap();
+                                        };
+
+                                        for (layer_index, layer_elements) in
+                                        layer_data.iter_mut().enumerate() {
+                                            let e = elements.get(&layer_index).unwrap().clone();
+                                            layer_elements.extend(e.into_iter().map(Into::into));
                                         }
                                     });
                                 });
