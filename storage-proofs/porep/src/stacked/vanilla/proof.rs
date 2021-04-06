@@ -506,7 +506,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                                         let mut elements = HashMap::new();
                                         for _ in 0..layers {
                                             let (layer_index, element) = element_rx.recv().unwrap();
-                                            elements.insert(layer_index, element).unwrap();
+                                            elements.insert(layer_index, element);
                                         };
 
                                         for (layer_index, layer_elements) in
