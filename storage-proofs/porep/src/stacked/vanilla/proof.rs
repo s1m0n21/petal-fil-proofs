@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Context;
 use bellperson::bls::Fr;
@@ -489,14 +489,12 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                                     for layer_index in 0..layers {
                                         let element_tx = element_tx.clone();
                                         s.spawn(move |_| {
-                                            let now = Instant::now();
                                             let store = labels.labels_for_layer(layer_index + 1);
                                             let start = (index.clone() * nodes_count) + node_index;
                                             let end = start + chunked_nodes_count;
                                             let elements: Vec<<Tree::Hasher as Hasher>::Domain> = store
                                                 .read_range(std::ops::Range { start, end })
                                                 .expect("failed to read store range");
-                                            trace!("read element chunk: {:?}", now.elapsed());
 
                                             element_tx.send((layer_index, elements)).unwrap();
                                         });
@@ -511,7 +509,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
 
                                         for (layer_index, layer_elements) in
                                         layer_data.iter_mut().enumerate() {
-                                            let e = elements.get(&layer_index).unwrap().clone();
+                                            let e = elements.get(&layer_index).unwrap().to_owned();
                                             layer_elements.extend(e.into_iter().map(Into::into));
                                         }
                                     });
