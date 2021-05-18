@@ -392,10 +392,12 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         if settings::SETTINGS.use_gpu_column_builder {
             let mut device_bus_ids = device_bus_ids;
 
-            let config_count = configs.len() - device_bus_ids.len();
-            if config_count > 0 {
-                for i in 0..config_count {
-                    device_bus_ids.push(device_bus_ids[i % device_bus_ids.len()])
+            if settings::SETTINGS.tree_c_expand {
+                let config_count = configs.len() - device_bus_ids.len();
+                if config_count > 0 {
+                    for i in 0..config_count {
+                        device_bus_ids.push(device_bus_ids[i % device_bus_ids.len()])
+                    };
                 };
             };
 
