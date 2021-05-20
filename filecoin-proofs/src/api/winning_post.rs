@@ -68,14 +68,11 @@ pub fn generate_winning_post_with_vanilla<Tree: 'static + MerkleTreeTrait>(
     let pub_inputs = fallback::PublicInputs {
         randomness: randomness_safe,
         prover_id: prover_id_safe,
-        sectors: &pub_sectors,
+        sectors: pub_sectors,
         k: None,
     };
 
-    let partitions = match pub_params.partitions {
-        Some(x) => x,
-        None => 1,
-    };
+    let partitions = pub_params.partitions.unwrap_or(1);
     let partitioned_proofs = partition_vanilla_proofs(
         &post_config,
         &pub_params.vanilla_params,
@@ -169,7 +166,7 @@ pub fn generate_winning_post<Tree: 'static + MerkleTreeTrait>(
     let pub_inputs = fallback::PublicInputs::<<Tree::Hasher as Hasher>::Domain> {
         randomness: randomness_safe,
         prover_id: prover_id_safe,
-        sectors: &pub_sectors,
+        sectors: pub_sectors,
         k: None,
     };
 
@@ -275,14 +272,14 @@ pub fn verify_winning_post<Tree: 'static + MerkleTreeTrait>(
     let pub_inputs = fallback::PublicInputs {
         randomness: randomness_safe,
         prover_id: prover_id_safe,
-        sectors: &pub_sectors,
+        sectors: pub_sectors,
         k: None,
     };
 
     let is_valid = {
         let verifying_key = get_post_verifying_key::<Tree>(&post_config)?;
 
-        let single_proof = MultiProof::new_from_reader(None, &proof[..], &verifying_key)?;
+        let single_proof = MultiProof::new_from_reader(None, proof, &verifying_key)?;
         if single_proof.len() != 1 {
             return Ok(false);
         }

@@ -1,5 +1,6 @@
 use std::fmt::{self, Debug, Formatter};
 use std::hash::Hasher as StdHasher;
+use std::panic::panic_any;
 
 use anyhow::ensure;
 use bellperson::{
@@ -148,7 +149,7 @@ impl Element for Sha256Domain {
     fn from_slice(bytes: &[u8]) -> Self {
         match Sha256Domain::try_from_bytes(bytes) {
             Ok(res) => res,
-            Err(err) => panic!(err),
+            Err(err) => panic_any(err),
         }
     }
 
@@ -238,7 +239,7 @@ impl HashFunction<Sha256Domain> for Sha256Function {
         mut cs: CS,
         bits: &[Boolean],
     ) -> Result<AllocatedNum<Bls12>, SynthesisError> {
-        let be_bits = sha256_circuit(cs.namespace(|| "hash"), &bits[..])?;
+        let be_bits = sha256_circuit(cs.namespace(|| "hash"), bits)?;
         let le_bits = be_bits
             .chunks(8)
             .flat_map(|chunk| chunk.iter().rev())

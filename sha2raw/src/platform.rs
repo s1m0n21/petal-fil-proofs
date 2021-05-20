@@ -1,4 +1,6 @@
-use crate::{sha256_intrinsics, sha256_utils};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use crate::sha256_intrinsics;
+use crate::sha256_utils;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,7 +81,7 @@ impl Implementation {
                 for block in blocks.chunks(2) {
                     buffer[..32].copy_from_slice(&block[0]);
                     buffer[32..].copy_from_slice(&block[1]);
-                    sha2_asm::compress256(state, &buffer);
+                    sha2_asm::compress256(state, &[buffer]);
                 }
             }
         }

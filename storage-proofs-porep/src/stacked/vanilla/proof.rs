@@ -1,5 +1,6 @@
 use std::fs;
 use std::marker::PhantomData;
+use std::panic::panic_any;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::sleep;
@@ -234,10 +235,11 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
 
                             {
                                 let labeled_node = rcp.c_x.get_node_at_layer(layer)?;
-                                if !proof.verify(&pub_inputs.replica_id, &labeled_node) {
-                                    panic!("Invalid encoding proof generated at layer {}", layer);
-                                };
-
+                                assert!(
+                                    proof.verify(&pub_inputs.replica_id, &labeled_node),
+                                    "Invalid encoding proof generated at layer {}",
+                                    layer,
+                                );
                                 trace!("Valid encoding proof generated at layer {}", layer);
                             }
 
@@ -387,9 +389,9 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         labels: &LabelsCache<Tree>,
         device_bus_ids: Vec<BusId>,
     ) -> Result<DiskTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            ColumnArity: 'static + PoseidonArity,
-            TreeArity: PoseidonArity,
+    where
+        ColumnArity: 'static + PoseidonArity,
+        TreeArity: PoseidonArity,
     {
         if SETTINGS.use_gpu_column_builder {
             Self::generate_tree_c_gpu::<ColumnArity, TreeArity>(
@@ -419,9 +421,9 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         configs: Vec<StoreConfig>,
         labels: &LabelsCache<Tree>,
     ) -> Result<DiskTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            ColumnArity: 'static + PoseidonArity,
-            TreeArity: PoseidonArity,
+    where
+        ColumnArity: 'static + PoseidonArity,
+        TreeArity: PoseidonArity,
     {
         Self::generate_tree_c_cpu::<ColumnArity, TreeArity>(
             layers,
@@ -442,9 +444,9 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         labels: &LabelsCache<Tree>,
         device_bus_ids: Vec<BusId>,
     ) -> Result<DiskTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            ColumnArity: 'static + PoseidonArity,
-            TreeArity: PoseidonArity,
+    where
+        ColumnArity: 'static + PoseidonArity,
+        TreeArity: PoseidonArity,
     {
         use std::cmp::min;
         use std::sync::{mpsc::sync_channel, Arc, RwLock};
@@ -644,7 +646,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                             Tree::Arity::to_usize(),
                             config.clone(),
                         )
-                            .expect("failed to create DiskStore for base tree data");
+                        .expect("failed to create DiskStore for base tree data");
 
                     let store = Arc::new(RwLock::new(tree_c_store));
                     let batch_size = min(base_data.len(), column_write_batch_size);
@@ -703,9 +705,9 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         configs: Vec<StoreConfig>,
         labels: &LabelsCache<Tree>,
     ) -> Result<DiskTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            ColumnArity: PoseidonArity,
-            TreeArity: PoseidonArity,
+    where
+        ColumnArity: PoseidonArity,
+        TreeArity: PoseidonArity,
     {
         info!("generating tree c using the CPU");
         measure_op(Operation::GenerateTreeC, || {
@@ -774,8 +776,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         labels: &LabelsCache<Tree>,
         device_bus_id: BusId,
     ) -> Result<LCTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            TreeArity: PoseidonArity,
+    where
+        TreeArity: PoseidonArity,
     {
         if SETTINGS.use_gpu_tree_builder {
             Self::generate_tree_r_last_gpu::<TreeArity>(
@@ -808,8 +810,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         replica_path: PathBuf,
         labels: &LabelsCache<Tree>,
     ) -> Result<LCTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            TreeArity: PoseidonArity,
+    where
+        TreeArity: PoseidonArity,
     {
         Self::generate_tree_r_last_cpu::<TreeArity>(
             data,
@@ -831,8 +833,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         labels: &LabelsCache<Tree>,
         device_bus_id: BusId,
     ) -> Result<LCTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            TreeArity: PoseidonArity,
+    where
+        TreeArity: PoseidonArity,
     {
         use std::cmp::min;
         use std::fs::OpenOptions;
@@ -912,7 +914,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                                         <Tree::Hasher as Hasher>::Domain::try_from_bytes(
                                             data_node_bytes,
                                         )
-                                            .expect("try_from_bytes failed");
+                                        .expect("try_from_bytes failed");
 
                                     let encoded_node = encode::<<Tree::Hasher as Hasher>::Domain>(
                                         key.into(),
@@ -950,7 +952,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                     max_gpu_tree_batch_size,
                     tree_r_last_config.rows_to_discard,
                 )
-                    .expect("failed to create TreeBuilder");
+                .expect("failed to create TreeBuilder");
 
                 // Loop until all trees for all configs have been built.
                 for i in 0..config_count {
@@ -993,11 +995,11 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                         config.size.expect("config size failure"),
                         Tree::Arity::to_usize(),
                     )
-                        .expect("failed to get merkle tree leaves"),
+                    .expect("failed to get merkle tree leaves"),
                     Tree::Arity::to_usize(),
                     config.rows_to_discard,
                 )
-                    .expect("failed to get merkle tree cache size");
+                .expect("failed to get merkle tree cache size");
                 assert_eq!(tree_data_len, cache_size);
 
                 let flat_tree_data: Vec<_> = tree_data
@@ -1038,8 +1040,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         replica_path: PathBuf,
         labels: &LabelsCache<Tree>,
     ) -> Result<LCTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            TreeArity: PoseidonArity,
+    where
+        TreeArity: PoseidonArity,
     {
         let (configs, replica_config) = split_config_and_replica(
             tree_r_last_config.clone(),
@@ -1097,7 +1099,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                 encoded_data,
                 config.clone(),
             )
-                .with_context(|| format!("failed tree_r_last CPU {}/{}", i + 1, tree_count))?;
+            .with_context(|| format!("failed tree_r_last CPU {}/{}", i + 1, tree_count))?;
 
             start = end;
             end += size / tree_count;
@@ -1124,7 +1126,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
             Self::generate_labels_for_encoding(graph, layer_challenges, replica_id, config.clone())
                 .context("failed to generate labels")
         })?
-            .0;
+        .0;
 
         let devices = Device::all();
         if SETTINGS.use_single_gpu {
@@ -1310,7 +1312,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                         ).expect("generate tree c failed");
                         tree_c.root()
                     }
-                    _ => panic!("Unsupported column arity"),
+                    _ => panic_any("Unsupported column arity"),
                 };
                 tree_c_tx.send(tree_c_root).expect("send tree_c_root failed");
                 info!("tree_c done");
@@ -1414,7 +1416,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         let labels = measure_op(Operation::EncodeWindowTimeAll, || {
             Self::generate_labels_for_encoding(&pp.graph, &pp.layer_challenges, replica_id, config)
         })?
-            .0;
+        .0;
 
         Ok(labels)
     }
@@ -1502,8 +1504,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         tree_r_last_config: StoreConfig,
         replica_path: PathBuf,
     ) -> Result<LCTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            TreeArity: PoseidonArity,
+    where
+        TreeArity: PoseidonArity,
     {
         use std::fs::OpenOptions;
         use std::io::Write;
@@ -1535,7 +1537,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                 max_gpu_tree_batch_size,
                 tree_r_last_config.rows_to_discard,
             )
-                .expect("failed to create TreeBuilder");
+            .expect("failed to create TreeBuilder");
 
             // Allocate zeros once and reuse.
             let zero_leaves: Vec<Fr> = vec![Fr::zero(); max_gpu_tree_batch_size];
@@ -1569,11 +1571,11 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                             config.size.expect("config size failure"),
                             Tree::Arity::to_usize(),
                         )
-                            .expect("failed to get merkle tree leaves"),
+                        .expect("failed to get merkle tree leaves"),
                         Tree::Arity::to_usize(),
                         config.rows_to_discard,
                     )
-                        .expect("failed to get merkle tree cache size");
+                    .expect("failed to get merkle tree cache size");
                     assert_eq!(tree_data_len, cache_size);
 
                     let flat_tree_data: Vec<_> = tree_data
@@ -1632,8 +1634,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         tree_r_last_config: StoreConfig,
         replica_path: PathBuf,
     ) -> Result<LCTree<Tree::Hasher, Tree::Arity, Tree::SubTreeArity, Tree::TopTreeArity>>
-        where
-            TreeArity: PoseidonArity,
+    where
+        TreeArity: PoseidonArity,
     {
         let (configs, replica_config) = split_config_and_replica(
             tree_r_last_config.clone(),

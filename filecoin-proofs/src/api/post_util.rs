@@ -83,10 +83,9 @@ pub fn generate_fallback_sector_challenges<Tree: 'static + MerkleTreeTrait>(
 
     let num_sectors_per_chunk = post_config.sector_count;
     let partitions = match post_config.typ {
-        PoStType::Window => match get_partitions_for_window_post(pub_sectors.len(), &post_config) {
-            Some(x) => x,
-            None => 1,
-        },
+        PoStType::Window => {
+            get_partitions_for_window_post(pub_sectors.len(), &post_config).unwrap_or(1)
+        }
         PoStType::Winning => 1,
     };
 
@@ -148,12 +147,11 @@ pub fn generate_single_vanilla_proof<Tree: 'static + MerkleTreeTrait>(
     let comm_c = replica.safe_comm_c();
     let comm_r_last = replica.safe_comm_r_last();
 
-    let mut priv_sectors = Vec::with_capacity(1);
-    priv_sectors.push(fallback::PrivateSector {
+    let priv_sectors = vec![fallback::PrivateSector {
         tree,
         comm_c,
         comm_r_last,
-    });
+    }];
 
     let priv_inputs = fallback::PrivateInputs::<Tree> {
         sectors: &priv_sectors,
@@ -182,7 +180,7 @@ pub fn generate_single_vanilla_proof<Tree: 'static + MerkleTreeTrait>(
 pub fn partition_vanilla_proofs<Tree: MerkleTreeTrait>(
     post_config: &PoStConfig,
     pub_params: &fallback::PublicParams,
-    pub_inputs: &fallback::PublicInputs<'_, <Tree::Hasher as Hasher>::Domain>,
+    pub_inputs: &fallback::PublicInputs<<Tree::Hasher as Hasher>::Domain>,
     partition_count: usize,
     vanilla_proofs: &[FallbackPoStSectorProof<Tree>],
 ) -> Result<Vec<VanillaProof<Tree>>> {

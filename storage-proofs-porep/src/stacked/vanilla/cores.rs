@@ -108,7 +108,7 @@ pub fn bind_core(core_index: CoreIndex) -> Result<Cleanup> {
     })
 }
 
-fn get_core_by_index<'a>(topo: &'a Topology, index: CoreIndex) -> Result<&'a TopologyObject> {
+fn get_core_by_index(topo: &Topology, index: CoreIndex) -> Result<&TopologyObject> {
     let idx = index.0;
 
     match topo.objects_with_type(&ObjectType::Core) {
@@ -133,7 +133,7 @@ fn core_groups(cores_per_unit: usize) -> Option<Vec<Mutex<Vec<CoreIndex>>>> {
     let core_count = all_cores.len();
 
     let mut cache_depth = core_depth;
-    let mut cache_count = 0;
+    let mut cache_count = 1;
 
     while cache_depth > 0 {
         let objs = topo.objects_at_depth(cache_depth);
