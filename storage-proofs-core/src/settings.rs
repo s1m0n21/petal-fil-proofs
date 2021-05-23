@@ -31,6 +31,8 @@ pub struct Settings {
     pub multicore_sdr_producer_stride: u64,
     pub multicore_sdr_lookahead: usize,
     pub use_single_gpu: bool,
+    pub tree_c_expand: bool,
+    pub tree_c_expand_count: usize,
 }
 
 impl Default for Settings {
@@ -56,6 +58,8 @@ impl Default for Settings {
             multicore_sdr_producer_stride: 128,
             multicore_sdr_lookahead: 800,
             use_single_gpu: false,
+            tree_c_expand: false,
+            tree_c_expand_count: 6,
         }
     }
 }
