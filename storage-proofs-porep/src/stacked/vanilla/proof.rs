@@ -449,7 +449,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
         TreeArity: PoseidonArity,
     {
         use std::cmp::min;
-        use std::sync::{mpsc::sync_channel, Arc, RwLock};
+        use std::sync::{Arc, RwLock};
 
         use bellperson::bls::Fr;
         use fr32::fr_into_bytes;
@@ -487,7 +487,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
 
             rayon::scope(|s| {
                 // This channel will receive the finished tree data to be written to disk.
-                let (writer_tx, writer_rx) = sync_channel::<(Vec<Fr>, Vec<Fr>)>(0);
+                let (writer_tx, writer_rx) = mpsc::channel();
 
                 for i in 0..parallel_num {
                     let (builder_tx, builder_rx) = mpsc::channel();
@@ -562,7 +562,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
 
                                 let is_final = node_index == nodes_count;
                                 builder_tx
-                                    .send((columns, is_final))
+                                    .send((columns, is_final, index))
                                     .expect("failed to send columns");
                             };
                             i += 1;
@@ -580,7 +580,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                         // Loop until all trees for all configs have been built.
                         for i in 0..config_count {
                             loop {
-                                let (columns, is_final): (Vec<GenericArray<Fr, ColumnArity>>, bool) =
+                                let (columns, is_final, config_idx) =
                                     builder_rx.recv().expect("failed to recv columns");
 
                                 // Just add non-final column batches.
@@ -610,7 +610,7 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                                 );
 
                                 writer_tx
-                                    .send((base_data, tree_data))
+                                    .send((base_data, tree_data, config_idx))
                                     .expect("failed to send base_data, tree_data");
                                 break;
                             }
@@ -618,11 +618,14 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                     });
                 };
 
-                for config in &configs {
-                    let (base_data, tree_data) = writer_rx
+                let mut i = 0 as usize;
+                while i < configs.len() {
+                    let (base_data, tree_data, config_idx) = writer_rx
                         .recv()
                         .expect("failed to receive base_data, tree_data for tree_c");
                     let tree_len = base_data.len() + tree_data.len();
+
+                    let config = configs[*config_idx].clone();
 
                     assert_eq!(base_data.len(), nodes_count);
                     assert_eq!(tree_len, config.size.expect("config size failure"));
@@ -689,6 +692,8 @@ impl<'a, Tree: 'static + MerkleTreeTrait, G: 'static + Hasher> StackedDrg<'a, Tr
                         .sync()
                         .expect("store sync failure");
                     trace!("done writing tree_c store data");
+
+                    i += 1;
                 }
             });
 
