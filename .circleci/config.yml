@@ -49,8 +49,6 @@ jobs:
       - run: rustup install $(cat rust-toolchain)
       - run: rustup default $(cat rust-toolchain)
       - run: rustup install << pipeline.parameters.nightly-toolchain >>
-      - run: rustup component add rustfmt-preview
-      - run: rustup component add clippy
       - run: cargo update
       - run: cargo fetch
       - run: rustc +$(cat rust-toolchain) --version
@@ -327,7 +325,7 @@ jobs:
       - restore_rustup_cache
       - run:
           name: Run cargo clippy
-          command: cargo +$(cat rust-toolchain) clippy --workspace
+          command: cargo +$(cat rust-toolchain) clippy --all-targets --workspace -- -D warnings
   test_darwin:
     macos:
       xcode: "10.0.0"
@@ -376,6 +374,11 @@ commands:
           command: /tmp/paramcache.awesome --sector-sizes='2048,4096,16384,32768'
           no_output_timeout: 60m
       - run:
+          name: Obtain filecoin ipp parameter file
+          command: |
+            cargo run --release --bin paramfetch -- -a -j srs-inner-product.json
+          no_output_timeout: 60m
+      - run:
           name: Make the parameters world readable
           command: chmod -R 755 ${FIL_PROOFS_PARAMETER_CACHE}
   save_rustup_cache:
@@ -400,7 +403,7 @@ commands:
     steps:
       - save_cache:
           name: "Save parameter cache"
-          key: proof-params-v28-e-{{ checksum "filecoin-proofs/parameters.json" }}
+          key: proof-params-v28-f-{{ checksum "filecoin-proofs/parameters.json" }}
           paths:
             - "/tmp/paramcache.awesome"
             - "/tmp/filecoin-proof-parameters/"
@@ -408,7 +411,7 @@ commands:
     steps:
       - restore_cache:
           name: "Restore parameter cache"
-          key: proof-params-v28-e-{{ checksum "filecoin-proofs/parameters.json" }}
+          key: proof-params-v28-f-{{ checksum "filecoin-proofs/parameters.json" }}
 
 workflows:
   version: 2.1
