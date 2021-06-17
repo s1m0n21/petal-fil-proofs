@@ -5,28 +5,33 @@ use std::path::PathBuf;
 use clap::{App, Arg};
 use serde::Deserialize;
 
-use filecoin_proofs::{PoStType, PrivateReplicaInfo, PublicReplicaInfo, with_shape, generate_winning_post, generate_window_post, verify_window_post, verify_winning_post};
+use filecoin_hashers::{Domain, Hasher};
 use filecoin_proofs::constants::WINDOW_POST_CHALLENGE_COUNT;
-use storage_proofs::merkle::MerkleTreeTrait;
-use storage_proofs::sector::SectorId;
-use storage_proofs::hasher::{Domain, Hasher};
-use storage_proofs::compound_proof::{SetupParams, CompoundProof, PublicParams};
-use storage_proofs::post::fallback;
-use log::{SetLoggerError, LevelFilter, Record, Level, Metadata, info};
+use filecoin_proofs::{
+    generate_window_post, generate_winning_post, verify_window_post, verify_winning_post,
+    with_shape, PoStType, PrivateReplicaInfo, PublicReplicaInfo,
+};
+use log::{info, Level, LevelFilter, Metadata, Record, SetLoggerError};
+use storage_proofs_core::{
+    api_version::ApiVersion,
+    compound_proof::{CompoundProof, PublicParams, SetupParams},
+    error::Result,
+    merkle::MerkleTreeTrait,
+    proof::ProofScheme,
+    sector::SectorId,
+};
+use storage_proofs_post::fallback;
 
 use filecoin_proofs::types::{ChallengeSeed, PoStConfig, ProverId, SectorSize};
-use storage_proofs::fr32::bytes_into_fr;
+use fr32::bytes_into_fr;
 use rayon::prelude::*;
 use std::time::SystemTime;
 
-use anyhow::{ensure, Context, Result};
-
+use anyhow::{ensure, Context};
 use filecoin_proofs::parameters::{window_post_setup_params, winning_post_setup_params};
-use storage_proofs::proof::ProofScheme;
 // use filecoin_proofs::api::util::{as_safe_commitment, get_base_tree_leafs, get_base_tree_size};
 
 const SECTOR_SIZE_32_GIB: u64 = 32 * 1024 * 1024 * 1024;
-// const SECTOR_SIZE_512_MIB: u64 = 512 * 1024 * 1024;
 
 struct SimpleLogger;
 
@@ -45,8 +50,7 @@ impl log::Log for SimpleLogger {
 }
 
 fn init_log() -> Result<(), SetLoggerError> {
-    log::set_boxed_logger(Box::new(SimpleLogger))
-        .map(|()| log::set_max_level(LevelFilter::Info))
+    log::set_boxed_logger(Box::new(SimpleLogger)).map(|()| log::set_max_level(LevelFilter::Info))
 }
 
 #[derive(Deserialize, Debug)]
@@ -78,20 +82,24 @@ fn main() {
         .version("0.1")
         .author("bailong")
         .about("repeat post verify")
-        .arg(Arg::with_name("param")
-            .short("p")
-            .long("param")
-            .value_name("withParam")
-            .help("set with param cache")
-            .takes_value(false))
-        .arg(Arg::with_name("config")
-            .short("c")
-            .long("config")
-            .value_name("FILE")
-            .help("Sets a custom config file")
-            .takes_value(true))
+        .arg(
+            Arg::with_name("param")
+                .short("p")
+                .long("param")
+                .value_name("withParam")
+                .help("set with param cache")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("config")
+                .short("c")
+                .long("config")
+                .value_name("FILE")
+                .help("Sets a custom config file")
+                .takes_value(true),
+        )
         .get_matches();
-    init_log().unwrap();
+    init_log().ok();
     let param = matches.is_present("param");
     let config = matches.value_of("config").unwrap_or("default.conf");
     println!("config: {}", config);
@@ -159,12 +167,15 @@ fn post<Tree: 'static + MerkleTreeTrait>(
         sector_count: 1,
         typ,
         priority: true,
+        api_version: ApiVersion::V1_0_0,
     };
 
     let r = if is_window {
-        let pub_replica = PublicReplicaInfo::new(comm_r).expect("failed to create public replica info");
-        let priv_replica = PrivateReplicaInfo::<Tree>::new(sealed_file_path, comm_r, cache_dir.clone())
-            .expect("failed to create private replica info");
+        let pub_replica =
+            PublicReplicaInfo::new(comm_r).expect("failed to create public replica info");
+        let priv_replica =
+            PrivateReplicaInfo::<Tree>::new(sealed_file_path, comm_r, cache_dir.clone())
+                .expect("failed to create private replica info");
         // Store the replica's private and publicly facing info for proving and verifying respectively.
         let mut pub_replica_info: BTreeMap<SectorId, PublicReplicaInfo> = BTreeMap::new();
         let mut priv_replica_info: BTreeMap<SectorId, PrivateReplicaInfo<Tree>> = BTreeMap::new();
@@ -174,39 +185,58 @@ fn post<Tree: 'static + MerkleTreeTrait>(
 
         let ret = if with_param {
             let x = generate_window_post::<Tree>(
-                &post_config, &randomness, &priv_replica_info, prover)?;
-            verify_window_post::<Tree>(
-                &post_config, &randomness, &pub_replica_info, prover, &x)
+                &post_config,
+                &randomness,
+                &priv_replica_info,
+                prover,
+            )?;
+            verify_window_post::<Tree>(&post_config, &randomness, &pub_replica_info, prover, &x)
         } else {
             generate_window_post_blank::<Tree>(
-                &post_config, &randomness, &priv_replica_info, prover)
+                &post_config,
+                &randomness,
+                &priv_replica_info,
+                prover,
+            )
         };
         ret
     } else {
-        let pub_replica = PublicReplicaInfo::new(comm_r).expect("failed to create public replica info");
-        let priv_replica = PrivateReplicaInfo::<Tree>::new(sealed_file_path, comm_r, cache_dir.clone())
-            .expect("failed to create private replica info");
+        let pub_replica =
+            PublicReplicaInfo::new(comm_r).expect("failed to create public replica info");
+        let priv_replica =
+            PrivateReplicaInfo::<Tree>::new(sealed_file_path, comm_r, cache_dir.clone())
+                .expect("failed to create private replica info");
         let pub_replica_info = vec![(sector_id, pub_replica)];
         let priv_replica_info = vec![(sector_id, priv_replica)];
 
         let ret = if with_param {
             let x = generate_winning_post::<Tree>(
-                &post_config, &randomness, &priv_replica_info[..], prover)?;
+                &post_config,
+                &randomness,
+                &priv_replica_info[..],
+                prover,
+            )?;
             verify_winning_post::<Tree>(
-                &post_config, &randomness, &pub_replica_info[..], prover, &x)
-        }else {
+                &post_config,
+                &randomness,
+                &pub_replica_info[..],
+                prover,
+                &x,
+            )
+        } else {
             generate_winning_post_blank::<Tree>(
-                &post_config, &randomness, &priv_replica_info[..], prover)
+                &post_config,
+                &randomness,
+                &priv_replica_info[..],
+                prover,
+            )
         };
         ret
     };
     r
 }
 
-fn as_safe_commitment<H: Domain, T: AsRef<str>>(
-    comm: &[u8; 32],
-    commitment_name: T,
-) -> Result<H> {
+fn as_safe_commitment<H: Domain, T: AsRef<str>>(comm: &[u8; 32], commitment_name: T) -> Result<H> {
     bytes_into_fr(comm)
         .map(Into::into)
         .with_context(|| format!("Invalid commitment ({})", commitment_name.as_ref(),))
@@ -245,7 +275,11 @@ fn generate_window_post_blank<Tree: 'static + MerkleTreeTrait>(
         .par_iter()
         .map(|(_id, replica)| replica.merkle_tree(post_config.sector_size))
         .collect::<Result<_>>()?;
-    info!("window init tree {} qiniu-time {:?}", trees.len(), t2.elapsed());
+    info!(
+        "window init tree {} qiniu-time {:?}",
+        trees.len(),
+        t2.elapsed()
+    );
     let mut pub_sectors = Vec::with_capacity(sector_count);
     let mut priv_sectors = Vec::with_capacity(sector_count);
 
@@ -268,7 +302,7 @@ fn generate_window_post_blank<Tree: 'static + MerkleTreeTrait>(
     let pub_inputs = fallback::PublicInputs {
         randomness: randomness_safe,
         prover_id: prover_id_safe,
-        sectors: &pub_sectors,
+        sectors: pub_sectors,
         k: None,
     };
 
@@ -282,7 +316,11 @@ fn generate_window_post_blank<Tree: 'static + MerkleTreeTrait>(
         1,
     )?;
 
-    let sanity_check = fallback::FallbackPoSt::<Tree>::verify_all_partitions(&pub_params.vanilla_params, &pub_inputs, &vanilla_proofs)?;
+    let sanity_check = fallback::FallbackPoSt::<Tree>::verify_all_partitions(
+        &pub_params.vanilla_params,
+        &pub_inputs,
+        &vanilla_proofs,
+    )?;
     ensure!(sanity_check, "sanity check failed");
 
     info!("generate_window_post:finish {:?}", timestamp.elapsed());
@@ -328,7 +366,11 @@ fn generate_winning_post_blank<Tree: 'static + MerkleTreeTrait>(
         .par_iter()
         .map(|(_, replica)| replica.merkle_tree(post_config.sector_size))
         .collect::<Result<Vec<_>>>()?;
-    info!("winning init tree {} qiniu-time {:?}", trees.len(), t2.elapsed());
+    info!(
+        "winning init tree {} qiniu-time {:?}",
+        trees.len(),
+        t2.elapsed()
+    );
     let mut pub_sectors = Vec::with_capacity(param_sector_count);
     let mut priv_sectors = Vec::with_capacity(param_sector_count);
 
@@ -353,7 +395,7 @@ fn generate_winning_post_blank<Tree: 'static + MerkleTreeTrait>(
     let pub_inputs = fallback::PublicInputs::<<Tree::Hasher as Hasher>::Domain> {
         randomness: randomness_safe,
         prover_id: prover_id_safe,
-        sectors: &pub_sectors,
+        sectors: pub_sectors,
         k: None,
     };
 
@@ -368,7 +410,11 @@ fn generate_winning_post_blank<Tree: 'static + MerkleTreeTrait>(
         1,
     )?;
 
-    let sanity_check = fallback::FallbackPoSt::<Tree>::verify_all_partitions(&pub_params.vanilla_params, &pub_inputs, &vanilla_proofs)?;
+    let sanity_check = fallback::FallbackPoSt::<Tree>::verify_all_partitions(
+        &pub_params.vanilla_params,
+        &pub_inputs,
+        &vanilla_proofs,
+    )?;
     ensure!(sanity_check, "sanity check failed");
 
     info!("generate_winning_post:finish {:?}", timestamp.elapsed());

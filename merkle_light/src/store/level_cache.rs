@@ -21,7 +21,7 @@ use crate::merkle::{
 };
 use crate::store::{ExternalReader, Store, StoreConfig, BUILD_CHUNK_NODES};
 
-use qiniu::service::storage::download::{qiniu_is_enable, reader_from_env};
+use qiniu::{is_qiniu_enabled, RangeReader};
 
 use log::{trace, debug, warn};
 
@@ -44,21 +44,24 @@ impl MixFile {
     }
 
     fn qiniu_open(path: &str, len: usize) -> std::io::Result<MixFile> {
-        let r = reader_from_env(path).unwrap().read_last_bytes(len)?;
+        let mut last_bytes = vec![0; len];
+        let (_, length) = RangeReader::from_env(path)
+            .unwrap()
+            .read_last_bytes(&mut last_bytes)?;
         trace!("read qiniu open {} {}", path, len);
-        trace!("qiniu data {} {}", &r.1[0], &r.1[len - 1]);
+        trace!("qiniu data {} {}", last_bytes[0], last_bytes[len - 1]);
         return Ok(MixFile {
             file: None,
             path: Some(path.to_string()),
-            length: Some(r.0),
-            last_bytes: Some(r.1),
+            length: Some(length),
+            last_bytes: Some(last_bytes),
         });
     }
 
     fn open<P: AsRef<Path>>(path: P) -> std::io::Result<MixFile> {
         let f = File::open(path)?;
         return Ok(MixFile {
-            length: Some(f.metadata().unwrap().len()),
+            length: Some(f.metadata()?.len()),
             file: Some(f),
             path: None,
             last_bytes: None,
@@ -303,7 +306,7 @@ impl<E: Element, R: Read + Send + Sync> Store<E> for LevelCacheStore<E, R> {
             return Self::new_from_disk(size, branches, &config);
         }
 
-        if qiniu_is_enable() && post {
+        if is_qiniu_enabled() && post {
             return Self::new_from_disk_v2(size, branches, &config, post);
         }
 
@@ -410,7 +413,7 @@ impl<E: Element, R: Read + Send + Sync> Store<E> for LevelCacheStore<E, R> {
         post: bool,
     ) -> Result<Self> {
         let data_path = StoreConfig::data_path(&config.path, &config.id);
-        let file = if post && qiniu_is_enable() {
+        let file = if post && is_qiniu_enabled() {
             MixFile::qiniu_open(data_path.to_str().unwrap(), E::byte_len())?
         } else {
             MixFile::open(data_path)?

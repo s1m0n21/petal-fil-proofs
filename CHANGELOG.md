@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://book.async.rs/overview
 
 ## Unreleased
 
+## [8.0.1] - 2021-06-09
+
+- Required SnarkPack Audit updates [#1470](https://github.com/filecoin-project/rust-fil-proofs/pull/1470)
+- Allow hwloc to be optional, but enabled by default [#1468](https://github.com/filecoin-project/rust-fil-proofs/pull/1468)
+- Improve Clippy on CI [#1465](https://github.com/filecoin-project/rust-fil-proofs/pull/1465)
+
+## [8.0.0] - 2021-06-01
+
+-  Add an API for Proof Aggregation [#1395](https://github.com/filecoin-project/rust-fil-proofs/pull/1395)
+-  Enforce serde for PublicInputs [#1458](https://github.com/filecoin-project/rust-fil-proofs/pull/1458)
+
+## [7.0.1] - 2021-05-06
+
+- Added Apple M1 asm support via updated sha2 dependency [#1457](https://github.com/filecoin-project/rust-fil-proofs/pull/1457)
+- Remove additional build warnings and update CI nightly toolchain [#1456](https://github.com/filecoin-project/rust-fil-proofs/pull/1456)
+- Fix aarch64/Linux build regression [#1455](https://github.com/filecoin-project/rust-fil-proofs/pull/1455)
+- Fix changelog errors and typos [#1451](https://github.com/filecoin-project/rust-fil-proofs/pull/1451)
+- Fix initial value for cache_count [#1454](https://github.com/filecoin-project/rust-fil-proofs/pull/1454)
+
+## [7.0.0] - 2021-04-28
+
+- Split up non-gpu tests for improved CI [#1448](https://github.com/filecoin-project/rust-fil-proofs/pull/1448)
+- Use latest version of dialoguer [#1447](https://github.com/filecoin-project/rust-fil-proofs/pull/1447)
+- Fix circuitinfo's binary name [#1443](https://github.com/filecoin-project/rust-fil-proofs/pull/1443)
+- Remove deprecated calls and clean-up warnings; add parallelization [#1436](https://github.com/filecoin-project/rust-fil-proofs/pull/1436)
+- Migrate gpu2 to default gpu code; Update rust toolchain to 1.51.0 [#1441](https://github.com/filecoin-project/rust-fil-proofs/pull/1441)
+- Improve unsealing memory performance [#1401](https://github.com/filecoin-project/rust-fil-proofs/pull/1401)
+- Update codeowners to current [#1432](https://github.com/filecoin-project/rust-fil-proofs/pull/1432)
+- Update config.json for the benches [#1431](https://github.com/filecoin-project/rust-fil-proofs/pull/1431)
+
+## [6.1.0] - 2021-03-09
+
+- Update bellperson to the latest version [#1430](https://github.com/filecoin-project/rust-fil-proofs/pull/1430)
+- Remove unused metrics capture CI job [#1428](https://github.com/filecoin-project/rust-fil-proofs/pull/1428)
+- Split up pc1/pc2 in the Window PoSt bench [#1427](https://github.com/filecoin-project/rust-fil-proofs/pull/1427)
+- Use `compress,asm` features of sha2 for aarch64 [#1404](https://github.com/filecoin-project/rust-fil-proofs/pull/1404)
+- Add gpu2, an optional feature that uses `neptune`'s opencl backend [#1397](https://github.com/filecoin-project/rust-fil-proofs/pull/1397)
+- Clean-up imports and remove globs [#1394](https://github.com/filecoin-project/rust-fil-proofs/pull/1394)
+- Remove `storage-proofs` sub-crate [#1393](https://github.com/filecoin-project/rust-fil-proofs/pull/1393)
+- Re-factor parameter related binaries [#1392](https://github.com/filecoin-project/rust-fil-proofs/pull/1392)
+- Fix merkle bench for poseidon hashing [#1389](https://github.com/filecoin-project/rust-fil-proofs/pull/1389)
+- Move `phase2` code into its own crate [#1388](https://github.com/filecoin-project/rust-fil-proofs/pull/1388)
+- Move `fr32` into its own crate [#1387](https://github.com/filecoin-project/rust-fil-proofs/pull/1387)
+- Ensure that builds without gpu support work [#1386](https://github.com/filecoin-project/rust-fil-proofs/pull/1386)
+- Increase parallelism in fallback PoSt [#1384](https://github.com/filecoin-project/rust-fil-proofs/pull/1384)
+- Move checkout_cores test behing a single-threaded feature [#1383](https://github.com/filecoin-project/rust-fil-proofs/pull/1383)
+- Improve the cache preservation in Window PoSt bench [#1382](https://github.com/filecoin-project/rust-fil-proofs/pull/1382)
+- Correct some typos in the Changelog [#1381](https://github.com/filecoin-project/rust-fil-proofs/pull/1381)
+
+## [6.0.0] - 2020-12-01
+
+- Add PoR gadget that does not add a public input [#1374](https://github.com/filecoin-project/rust-fil-proofs/pull/1374)
+- Update README and fix some typos [#1377](https://github.com/filecoin-project/rust-fil-proofs/pull/1377)
+- Update bellperson using new blstrs, which in turn now uses`blst@0.3.2` [#1376](https://github.com/filecoin-project/rust-fil-proofs/pull/1376)
+- Fix tree_c and tree_r_last generation in GPU mode [#1375](https://github.com/filecoin-project/rust-fil-proofs/pull/1375)
+- Add API version enum for determining runtime behaviour [#1362](https://github.com/filecoin-project/rust-fil-proofs/pull/1362)
+- Parallelize CI test runs across packages [#1358](https://github.com/filecoin-project/rust-fil-proofs/pull/1358)
+- Update paramcache run for metrics capture CI job [#1363](https://github.com/filecoin-project/rust-fil-proofs/pull/1363)
+- Re-organize filecoin-proofs source [#1352](https://github.com/filecoin-project/rust-fil-proofs/pull/1352)
+- Move hashers into `filecoin-hashers` crate [#1356](https://github.com/filecoin-project/rust-fil-proofs/pull/1356)
+- Speed up Fr32Reader [#1341](https://github.com/filecoin-project/rust-fil-proofs/pull/1341)
+- Serialize GPU tree building with GPU lock [#1335](https://github.com/filecoin-project/rust-fil-proofs/pull/1335)
+- Disable `phase2` tests that require external files [#1342](https://github.com/filecoin-project/rust-fil-proofs/pull/1342)
+- Move `phase2` into its own crate [#1340](https://github.com/filecoin-project/rust-fil-proofs/pull/1340)
+- Raise soft fdlimit to max at runtime (OS X/Linux) [#1338](https://github.com/filecoin-project/rust-fil-proofs/pull/1338)
+- Improve clippy lints (rust 2018 idioms) [#1337](https://github.com/filecoin-project/rust-fil-proofs/pull/1337)
+
 ## [5.4.0] - 2020-11-02
 
 - Fix graph generation [#1336](https://github.com/filecoin-project/rust-fil-proofs/pull/1336)
@@ -175,7 +242,13 @@ and this project adheres to [Semantic Versioning](https://book.async.rs/overview
 
 - Initial stable release
 
-[Unreleased]: https://github.com/filecoin-project/rust-fil-proofs/compare/v5.4.0...HEAD
+[Unreleased]: https://github.com/filecoin-project/rust-fil-proofs/compare/v8.0.1...HEAD
+[8.0.1]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v8.0.1
+[8.0.0]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v8.0.0
+[7.0.1]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v7.0.1
+[7.0.0]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v7.0.0
+[6.1.0]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v6.1.0
+[6.0.0]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v6.0.0
 [5.4.0]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v5.4.0
 [5.3.0]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v5.3.0
 [5.2.3]: https://github.com/filecoin-project/rust-fil-proofs/tree/releases/v5.2.3

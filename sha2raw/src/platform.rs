@@ -1,3 +1,7 @@
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use crate::sha256_intrinsics;
+use crate::sha256_utils;
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Platform {
@@ -65,12 +69,10 @@ impl Implementation {
     pub fn compress256(self, state: &mut [u32; 8], blocks: &[&[u8]]) {
         match self.0 {
             Platform::Portable => {
-                use crate::sha256_utils;
                 sha256_utils::compress256(state, blocks);
             }
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             Platform::Sha => {
-                use crate::sha256_intrinsics;
                 unsafe { sha256_intrinsics::compress256(state, blocks) };
             }
             #[cfg(feature = "asm")]
@@ -79,7 +81,7 @@ impl Implementation {
                 for block in blocks.chunks(2) {
                     buffer[..32].copy_from_slice(&block[0]);
                     buffer[32..].copy_from_slice(&block[1]);
-                    sha2_asm::compress256(state, &buffer);
+                    sha2_asm::compress256(state, &[buffer]);
                 }
             }
         }

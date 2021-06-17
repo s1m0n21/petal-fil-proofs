@@ -1,15 +1,15 @@
 use std::fs::{create_dir, remove_dir_all};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
+use filecoin_hashers::Hasher;
 use filecoin_proofs::with_shape;
 use log::{debug, info};
 use rand::{thread_rng, Rng};
-use storage_proofs::hasher::Hasher;
-use storage_proofs::merkle::{
+use storage_proofs_core::merkle::{
     generate_tree, get_base_tree_count, MerkleProofTrait, MerkleTreeTrait, MerkleTreeWrapper,
 };
-use storage_proofs::util::default_rows_to_discard;
+use storage_proofs_core::util::default_rows_to_discard;
 use typenum::Unsigned;
 
 fn generate_proofs<R: Rng, Tree: MerkleTreeTrait>(
@@ -57,7 +57,7 @@ fn generate_proofs<R: Rng, Tree: MerkleTreeTrait>(
             .gen_cached_proof(challenge, Some(rows_to_discard))
             .expect("failed to generate proof");
         if validate {
-            assert!(proof.validate(challenge));
+            ensure!(proof.validate(challenge), "failed to validate proof");
         }
     }
 

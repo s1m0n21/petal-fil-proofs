@@ -1,27 +1,35 @@
-use std::fs::{create_dir_all, remove_dir_all, OpenOptions};
+use std::fs::{self, create_dir_all, remove_dir_all, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context, Result};
 use bincode::deserialize;
 use clap::{value_t, App, Arg, SubCommand};
+use filecoin_hashers::Hasher;
+use filecoin_proofs::{
+    is_sector_shape_base, is_sector_shape_sub2, is_sector_shape_sub8, is_sector_shape_top2,
+    with_shape, DefaultTreeDomain, PersistentAux, SectorShapeBase, SectorShapeSub2,
+    SectorShapeSub8, SectorShapeTop2, OCT_ARITY,
+};
 use generic_array::typenum::Unsigned;
 use memmap::MmapOptions;
-use merkletree::merkle::get_merkle_tree_len;
-use merkletree::store::{ExternalReader, ReplicaConfig, Store, StoreConfig};
-
-use filecoin_proofs::constants::*;
-use filecoin_proofs::types::*;
-use filecoin_proofs::with_shape;
-use storage_proofs::cache_key::CacheKey;
-use storage_proofs::hasher::Hasher;
-use storage_proofs::merkle::{create_lc_tree, get_base_tree_count, split_config_and_replica};
-use storage_proofs::merkle::{LCStore, LCTree, MerkleTreeTrait};
-use storage_proofs::util::{default_rows_to_discard, NODE_SIZE};
+use merkletree::{
+    merkle::get_merkle_tree_len,
+    store::{ExternalReader, ReplicaConfig, Store, StoreConfig},
+};
+use storage_proofs_core::{
+    cache_key::CacheKey,
+    merkle::{
+        create_lc_tree, get_base_tree_count, split_config_and_replica, LCStore, LCTree,
+        MerkleTreeTrait,
+    },
+    util::{default_rows_to_discard, NODE_SIZE},
+};
+use tempfile::tempdir;
 
 fn get_tree_r_info(
     sector_size: usize,
-    cache: &PathBuf,
-    replica_path: &PathBuf,
+    cache: &Path,
+    replica_path: &Path,
 ) -> Result<(usize, usize, Vec<StoreConfig>, ReplicaConfig)> {
     let tree_count = with_shape!(sector_size as u64, get_base_tree_count);
 
@@ -43,7 +51,7 @@ fn get_tree_r_info(
     // Split the config based on the number of nodes required
     let (configs, replica_config) = split_config_and_replica(
         tree_r_last_config,
-        replica_path.clone(),
+        replica_path.to_path_buf(),
         base_tree_leafs,
         tree_count,
     )?;
@@ -97,10 +105,10 @@ fn get_tree_r_last_root(
     Ok(tree_r_last_root)
 }
 
-fn get_persistent_aux(cache: &PathBuf) -> Result<PersistentAux<DefaultTreeDomain>> {
+fn get_persistent_aux(cache: &Path) -> Result<PersistentAux<DefaultTreeDomain>> {
     let p_aux: PersistentAux<DefaultTreeDomain> = {
         let p_aux_path = cache.join(CacheKey::PAux.to_string());
-        let p_aux_bytes = std::fs::read(&p_aux_path)
+        let p_aux_bytes = fs::read(&p_aux_path)
             .with_context(|| format!("could not read file p_aux={:?}", p_aux_path))?;
 
         deserialize(&p_aux_bytes)
@@ -111,11 +119,11 @@ fn get_persistent_aux(cache: &PathBuf) -> Result<PersistentAux<DefaultTreeDomain
 
 fn build_tree_r_last<Tree: MerkleTreeTrait>(
     sector_size: usize,
-    cache: &PathBuf,
-    replica_path: &PathBuf,
+    cache: &Path,
+    replica_path: &Path,
 ) -> Result<(<Tree::Hasher as Hasher>::Domain, Vec<DefaultTreeDomain>)> {
     let (tree_count, base_tree_leafs, configs, replica_config) =
-        get_tree_r_info(sector_size, &cache, &replica_path)?;
+        get_tree_r_info(sector_size, cache, replica_path)?;
 
     let f_data = OpenOptions::new()
         .read(true)
@@ -161,21 +169,21 @@ fn build_tree_r_last<Tree: MerkleTreeTrait>(
 
 fn run_rebuild(
     sector_size: usize,
-    cache: PathBuf,
-    replica_path: PathBuf,
+    cache: &Path,
+    replica_path: &Path,
 ) -> Result<(DefaultTreeDomain, Vec<DefaultTreeDomain>)> {
     with_shape!(
         sector_size as u64,
         build_tree_r_last,
         sector_size,
-        &cache,
-        &replica_path
+        cache,
+        replica_path
     )
 }
 
-fn run_inspect(sector_size: usize, cache: PathBuf, replica_path: PathBuf) -> Result<()> {
+fn run_inspect(sector_size: usize, cache: &Path, replica_path: &Path) -> Result<()> {
     let (_tree_count, base_tree_leafs, configs, replica_config) =
-        get_tree_r_info(sector_size, &cache, &replica_path)?;
+        get_tree_r_info(sector_size, cache, replica_path)?;
     let tree_r_last_root = get_tree_r_last_root(
         base_tree_leafs,
         sector_size as u64,
@@ -199,9 +207,9 @@ fn run_inspect(sector_size: usize, cache: PathBuf, replica_path: PathBuf) -> Res
     Ok(())
 }
 
-fn run_verify(sector_size: usize, cache: PathBuf, replica_path: PathBuf) -> Result<()> {
+fn run_verify(sector_size: usize, cache: &Path, replica_path: &Path) -> Result<()> {
     let (tree_count, base_tree_leafs, configs, replica_config) =
-        get_tree_r_info(sector_size, &cache, &replica_path)?;
+        get_tree_r_info(sector_size, cache, replica_path)?;
     let base_tree_len = get_merkle_tree_len(base_tree_leafs, OCT_ARITY)?;
 
     let match_str = |a, b| -> &str {
@@ -235,7 +243,7 @@ fn run_verify(sector_size: usize, cache: PathBuf, replica_path: PathBuf) -> Resu
     // Read comm_r_last from the persistent aux in the cache dir
     let p_aux: PersistentAux<DefaultTreeDomain> = {
         let p_aux_path = cache.join(CacheKey::PAux.to_string());
-        let p_aux_bytes = std::fs::read(&p_aux_path)
+        let p_aux_bytes = fs::read(&p_aux_path)
             .with_context(|| format!("could not read file p_aux={:?}", p_aux_path))?;
 
         deserialize(&p_aux_bytes)
@@ -243,12 +251,12 @@ fn run_verify(sector_size: usize, cache: PathBuf, replica_path: PathBuf) -> Resu
 
     // Rebuild each of the tree_r_last base trees (in a new temp dir so as not to interfere
     // with any existing ones on disk) and check if the roots match what's cached on disk
-    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp_dir = tempdir().unwrap();
     let tmp_path = tmp_dir.path();
     create_dir_all(&tmp_path)?;
 
     let (rebuilt_tree_r_last_root, rebuilt_base_tree_roots) =
-        run_rebuild(sector_size, tmp_path.to_path_buf(), replica_path)?;
+        run_rebuild(sector_size, &tmp_path, &replica_path)?;
 
     remove_dir_all(&tmp_path)?;
 
@@ -393,21 +401,21 @@ fn main() -> Result<()> {
             let replica = value_t!(m, "replica", PathBuf)?;
             let size = value_t!(m, "size", usize)
                 .expect("could not convert `size` CLI argument to `usize`");
-            run_rebuild(size, cache, replica)?;
+            run_rebuild(size, cache.as_path(), replica.as_path())?;
         }
         ("inspect", Some(m)) => {
             let cache = value_t!(m, "cache", PathBuf)?;
             let replica = value_t!(m, "replica", PathBuf)?;
             let size = value_t!(m, "size", usize)
                 .expect("could not convert `size` CLI argument to `usize`");
-            run_inspect(size, cache, replica)?;
+            run_inspect(size, cache.as_path(), replica.as_path())?;
         }
         ("verify", Some(m)) => {
             let cache = value_t!(m, "cache", PathBuf)?;
             let replica = value_t!(m, "replica", PathBuf)?;
             let size = value_t!(m, "size", usize)
                 .expect("could not convert `size` CLI argument to `usize`");
-            run_verify(size, cache, replica)?;
+            run_verify(size, cache.as_path(), replica.as_path())?;
         }
         _ => panic!("Unrecognized subcommand"),
     }

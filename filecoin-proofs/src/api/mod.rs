@@ -1,44 +1,57 @@
-use std::fs::File;
-use std::io::{BufWriter, Read, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context, Result};
 use bincode::deserialize;
-use log::info;
+use filecoin_hashers::Hasher;
+use fr32::{write_unpadded, Fr32Reader};
+use log::{info, trace};
+use memmap::MmapOptions;
 use merkletree::store::{DiskStore, LevelCacheStore, StoreConfig};
-use storage_proofs::cache_key::CacheKey;
-use storage_proofs::hasher::Hasher;
-use storage_proofs::measurements::{measure_op, Operation};
-use storage_proofs::merkle::get_base_tree_count;
-use storage_proofs::porep::stacked::{
-    generate_replica_id, PersistentAux, StackedDrg, TemporaryAux,
+use qiniu::{is_qiniu_enabled, RangeReader};
+use storage_proofs_core::{
+    cache_key::CacheKey,
+    measurements::{measure_op, Operation},
+    merkle::get_base_tree_count,
+    pieces::generate_piece_commitment_bytes_from_source,
+    sector::SectorId,
+    util::default_rows_to_discard,
 };
-use storage_proofs::porep::PoRep;
-use storage_proofs::sector::SectorId;
-use storage_proofs::util::default_rows_to_discard;
+use storage_proofs_porep::{
+    stacked::{generate_replica_id, PersistentAux, StackedDrg, TemporaryAux},
+    PoRep,
+};
 use typenum::Unsigned;
 
-use crate::api::util::{as_safe_commitment, get_base_tree_leafs, get_base_tree_size};
-use crate::commitment_reader::CommitmentReader;
-use crate::constants::{
-    DefaultBinaryTree, DefaultOctTree, DefaultPieceDomain, DefaultPieceHasher,
-    MINIMUM_RESERVED_BYTES_FOR_PIECE_IN_FULLY_ALIGNED_SECTOR as MINIMUM_PIECE_SIZE,
-};
-use crate::fr32::write_unpadded;
-use crate::parameters::public_params;
-use crate::types::{
-    Commitment, MerkleTreeTrait, PaddedBytesAmount, PieceInfo, PoRepConfig, PoRepProofPartitions,
-    ProverId, SealPreCommitPhase1Output, Ticket, UnpaddedByteIndex, UnpaddedBytesAmount,
+use crate::{
+    commitment_reader::CommitmentReader,
+    constants::{
+        DefaultBinaryTree, DefaultOctTree, DefaultPieceDomain, DefaultPieceHasher,
+        MINIMUM_RESERVED_BYTES_FOR_PIECE_IN_FULLY_ALIGNED_SECTOR as MINIMUM_PIECE_SIZE,
+    },
+    parameters::public_params,
+    pieces::{get_piece_alignment, sum_piece_bytes_with_alignment},
+    types::{
+        Commitment, MerkleTreeTrait, PaddedBytesAmount, PieceInfo, PoRepConfig,
+        PoRepProofPartitions, ProverId, SealPreCommitPhase1Output, Ticket, UnpaddedByteIndex,
+        UnpaddedBytesAmount,
+    },
 };
 
-mod post;
+mod fake_seal;
+mod post_util;
 mod seal;
-pub(crate) mod util;
+mod util;
+mod window_post;
+mod winning_post;
 
-pub use self::post::*;
-pub use self::seal::*;
-
-use storage_proofs::pieces::generate_piece_commitment_bytes_from_source;
+pub use fake_seal::*;
+pub use post_util::*;
+pub use seal::*;
+pub use util::*;
+pub use window_post::*;
+pub use winning_post::*;
 
 /// Unseals the sector at `sealed_path` and returns the bytes for a piece
 /// whose first (unpadded) byte begins at `offset` and ends at `offset` plus
@@ -72,18 +85,15 @@ pub fn get_unsealed_range<T: Into<PathBuf> + AsRef<Path>, Tree: 'static + Merkle
 ) -> Result<UnpaddedBytesAmount> {
     info!("get_unsealed_range:start");
 
-    let f_in = File::open(&sealed_path)
-        .with_context(|| format!("could not open sealed_path={:?}", sealed_path.as_ref()))?;
-
     let f_out = File::create(&output_path)
         .with_context(|| format!("could not create output_path={:?}", output_path.as_ref()))?;
 
     let buf_f_out = BufWriter::new(f_out);
 
-    let result = unseal_range::<_, _, _, Tree>(
+    let result = unseal_range_mapped::<_, _, Tree>(
         porep_config,
         cache_path,
-        f_in,
+        sealed_path.into(),
         buf_f_out,
         prover_id,
         sector_id,
@@ -119,7 +129,7 @@ pub fn unseal_range<P, R, W, Tree>(
     porep_config: PoRepConfig,
     cache_path: P,
     mut sealed_sector: R,
-    mut unsealed_output: W,
+    unsealed_output: W,
     prover_id: ProverId,
     sector_id: SectorId,
     comm_d: Commitment,
@@ -150,10 +160,126 @@ where
     let mut data = Vec::new();
     sealed_sector.read_to_end(&mut data)?;
 
+    let res = unseal_range_inner::<_, _, Tree>(
+        porep_config,
+        cache_path,
+        &mut data,
+        unsealed_output,
+        replica_id,
+        offset,
+        num_bytes,
+    )?;
+
+    info!("unseal_range:finish");
+
+    Ok(res)
+}
+
+/// Unseals the sector read from `sealed_sector` and returns the bytes for a
+/// piece whose first (unpadded) byte begins at `offset` and ends at `offset`
+/// plus `num_bytes`, inclusive. Note that the entire sector is unsealed each
+/// time this function is called.
+///
+/// # Arguments
+///
+/// * `porep_config` - porep configuration containing the sector size.
+/// * `cache_path` - path to the directory in which the sector data's Merkle Tree is written.
+/// * `sealed_sector` - a byte source from which we read sealed sector data.
+/// * `unsealed_output` - a byte sink to which we write unsealed, un-bit-padded sector bytes.
+/// * `prover_id` - the prover-id that sealed the sector.
+/// * `sector_id` - the sector-id of the sealed sector.
+/// * `comm_d` - the commitment to the sector's data.
+/// * `ticket` - the ticket that was used to generate the sector's replica-id.
+/// * `offset` - the byte index in the unsealed sector of the first byte that we want to read.
+/// * `num_bytes` - the number of bytes that we want to read.
+#[allow(clippy::too_many_arguments)]
+pub fn unseal_range_mapped<P, W, Tree>(
+    porep_config: PoRepConfig,
+    cache_path: P,
+    sealed_path: PathBuf,
+    unsealed_output: W,
+    prover_id: ProverId,
+    sector_id: SectorId,
+    comm_d: Commitment,
+    ticket: Ticket,
+    offset: UnpaddedByteIndex,
+    num_bytes: UnpaddedBytesAmount,
+) -> Result<UnpaddedBytesAmount>
+where
+    P: Into<PathBuf> + AsRef<Path>,
+    W: Write,
+    Tree: 'static + MerkleTreeTrait,
+{
+    info!("unseal_range_mapped:start");
+    ensure!(comm_d != [0; 32], "Invalid all zero commitment (comm_d)");
+
+    let comm_d =
+        as_safe_commitment::<<DefaultPieceHasher as Hasher>::Domain, _>(&comm_d, "comm_d")?;
+
+    let replica_id = generate_replica_id::<Tree::Hasher, _>(
+        &prover_id,
+        sector_id.into(),
+        &ticket,
+        comm_d,
+        &porep_config.porep_id,
+    );
+
+    let mapped_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&sealed_path)?;
+    let mut data = unsafe { MmapOptions::new().map_copy(&mapped_file)? };
+
+    let result = unseal_range_inner::<_, _, Tree>(
+        porep_config,
+        cache_path,
+        &mut data,
+        unsealed_output,
+        replica_id,
+        offset,
+        num_bytes,
+    );
+    info!("unseal_range_mapped:finish");
+
+    result
+}
+
+/// Unseals the sector read from `sealed_sector` and returns the bytes for a
+/// piece whose first (unpadded) byte begins at `offset` and ends at `offset`
+/// plus `num_bytes`, inclusive. Note that the entire sector is unsealed each
+/// time this function is called.
+///
+/// # Arguments
+///
+/// * `porep_config` - porep configuration containing the sector size.
+/// * `cache_path` - path to the directory in which the sector data's Merkle Tree is written.
+/// * `sealed_sector` - a byte source from which we read sealed sector data.
+/// * `unsealed_output` - a byte sink to which we write unsealed, un-bit-padded sector bytes.
+/// * `prover_id` - the prover-id that sealed the sector.
+/// * `sector_id` - the sector-id of the sealed sector.
+/// * `comm_d` - the commitment to the sector's data.
+/// * `ticket` - the ticket that was used to generate the sector's replica-id.
+/// * `offset` - the byte index in the unsealed sector of the first byte that we want to read.
+/// * `num_bytes` - the number of bytes that we want to read.
+#[allow(clippy::too_many_arguments)]
+fn unseal_range_inner<P, W, Tree>(
+    porep_config: PoRepConfig,
+    cache_path: P,
+    data: &mut [u8],
+    mut unsealed_output: W,
+    replica_id: <Tree::Hasher as Hasher>::Domain,
+    offset: UnpaddedByteIndex,
+    num_bytes: UnpaddedBytesAmount,
+) -> Result<UnpaddedBytesAmount>
+where
+    P: Into<PathBuf> + AsRef<Path>,
+    W: Write,
+    Tree: 'static + MerkleTreeTrait,
+{
+    info!("unseal_range_inner:start");
+
     let base_tree_size = get_base_tree_size::<DefaultBinaryTree>(porep_config.sector_size)?;
     let base_tree_leafs = get_base_tree_leafs::<DefaultBinaryTree>(base_tree_size)?;
-    // MT for original data is always named tree-d, and it will be
-    // referenced later in the process as such.
     let config = StoreConfig::new(
         cache_path.as_ref(),
         CacheKey::CommDTree.to_string(),
@@ -166,16 +292,16 @@ where
         PaddedBytesAmount::from(porep_config),
         usize::from(PoRepProofPartitions::from(porep_config)),
         porep_config.porep_id,
+        porep_config.api_version,
     )?;
 
     let offset_padded: PaddedBytesAmount = UnpaddedBytesAmount::from(offset).into();
     let num_bytes_padded: PaddedBytesAmount = num_bytes.into();
 
-    let unsealed_all =
-        StackedDrg::<Tree, DefaultPieceHasher>::extract_all(&pp, &replica_id, &data, Some(config))?;
+    StackedDrg::<Tree, DefaultPieceHasher>::extract_all(&pp, &replica_id, data, Some(config))?;
     let start: usize = offset_padded.into();
     let end = start + usize::from(num_bytes_padded);
-    let unsealed = &unsealed_all[start..end];
+    let unsealed = &data[start..end];
 
     // If the call to `extract_range` was successful, the `unsealed` vector must
     // have a length which equals `num_bytes_padded`. The byte at its 0-index
@@ -185,7 +311,7 @@ where
 
     let amount = UnpaddedBytesAmount(written as u64);
 
-    info!("unseal_range:finish");
+    info!("unseal_range_inner:finish");
     Ok(amount)
 }
 
@@ -197,18 +323,18 @@ where
 /// * `source` - a readable source of unprocessed piece bytes. The piece's commitment will be
 /// generated for the bytes read from the source plus any added padding.
 /// * `piece_size` - the number of unpadded user-bytes which can be read from source before EOF.
-pub fn generate_piece_commitment<T: std::io::Read>(
+pub fn generate_piece_commitment<T: Read>(
     source: T,
     piece_size: UnpaddedBytesAmount,
 ) -> Result<PieceInfo> {
-    info!("generate_piece_commitment:start");
+    trace!("generate_piece_commitment:start");
 
     let result = measure_op(Operation::GeneratePieceCommitment, || {
         ensure_piece_size(piece_size)?;
 
         // send the source through the preprocessor
-        let source = std::io::BufReader::new(source);
-        let mut fr32_reader = crate::fr32_reader::Fr32Reader::new(source);
+        let source = BufReader::new(source);
+        let mut fr32_reader = Fr32Reader::new(source);
 
         let commitment = generate_piece_commitment_bytes_from_source::<DefaultPieceHasher>(
             &mut fr32_reader,
@@ -218,7 +344,7 @@ pub fn generate_piece_commitment<T: std::io::Read>(
         PieceInfo::new(commitment, piece_size)
     });
 
-    info!("generate_piece_commitment:finish");
+    trace!("generate_piece_commitment:finish");
     result
 }
 
@@ -256,12 +382,12 @@ where
     let result = measure_op(Operation::AddPiece, || {
         ensure_piece_size(piece_size)?;
 
-        let source = std::io::BufReader::new(source);
-        let mut target = std::io::BufWriter::new(target);
+        let source = BufReader::new(source);
+        let mut target = BufWriter::new(target);
 
-        let written_bytes = crate::pieces::sum_piece_bytes_with_alignment(&piece_lengths);
-        let piece_alignment = crate::pieces::get_piece_alignment(written_bytes, piece_size);
-        let fr32_reader = crate::fr32_reader::Fr32Reader::new(source);
+        let written_bytes = sum_piece_bytes_with_alignment(&piece_lengths);
+        let piece_alignment = get_piece_alignment(written_bytes, piece_size);
+        let fr32_reader = Fr32Reader::new(source);
 
         // write left alignment
         for _ in 0..usize::from(PaddedBytesAmount::from(piece_alignment.left_bytes)) {
@@ -269,7 +395,7 @@ where
         }
 
         let mut commitment_reader = CommitmentReader::new(fr32_reader);
-        let n = std::io::copy(&mut commitment_reader, &mut target)
+        let n = io::copy(&mut commitment_reader, &mut target)
             .context("failed to write and preprocess bytes")?;
 
         ensure!(n != 0, "add_piece: read 0 bytes before EOF from source");
@@ -360,7 +486,7 @@ fn verify_store(config: &StoreConfig, arity: usize, required_configs: usize) -> 
                 let path_str = cur_path.as_str();
                 let tree_names = vec!["tree-d", "tree-c", "tree-r-last"];
                 for name in tree_names {
-                    if path_str.find(name).is_some() {
+                    if path_str.contains(name) {
                         configs.push(StoreConfig::from_config(
                             config,
                             format!("{}-{}", name, i),
@@ -424,7 +550,7 @@ fn verify_level_cache_store<Tree: MerkleTreeTrait>(config: &StoreConfig) -> Resu
                 let path_str = cur_path.as_str();
                 let tree_names = vec!["tree-d", "tree-c", "tree-r-last"];
                 for name in tree_names {
-                    if path_str.find(name).is_some() {
+                    if path_str.contains(name) {
                         configs.push(StoreConfig::from_config(
                             config,
                             format!("{}-{}", name, i),
@@ -445,7 +571,7 @@ fn verify_level_cache_store<Tree: MerkleTreeTrait>(config: &StoreConfig) -> Resu
         let store_len = config.size.expect("disk store size not configured");
         for config in &configs {
             ensure!(
-                LevelCacheStore::<DefaultPieceDomain, std::fs::File>::is_consistent(
+                LevelCacheStore::<DefaultPieceDomain, File>::is_consistent(
                     store_len,
                     Tree::Arity::to_usize(),
                     &config,
@@ -456,7 +582,7 @@ fn verify_level_cache_store<Tree: MerkleTreeTrait>(config: &StoreConfig) -> Resu
         }
     } else {
         ensure!(
-            LevelCacheStore::<DefaultPieceDomain, std::fs::File>::is_consistent(
+            LevelCacheStore::<DefaultPieceDomain, File>::is_consistent(
                 config.size.expect("disk store size not configured"),
                 Tree::Arity::to_usize(),
                 &config,
@@ -543,7 +669,7 @@ where
 
     // Make sure p_aux exists and is valid.
     let p_aux_path = cache.join(CacheKey::PAux.to_string());
-    let p_aux_bytes = std::fs::read(&p_aux_path)
+    let p_aux_bytes = fs::read(&p_aux_path)
         .with_context(|| format!("could not read file p_aux={:?}", p_aux_path))?;
 
     let _: PersistentAux<<Tree::Hasher as Hasher>::Domain> = deserialize(&p_aux_bytes)?;
@@ -552,7 +678,7 @@ where
     // Make sure t_aux exists and is valid.
     let t_aux = {
         let t_aux_path = cache.join(CacheKey::TAux.to_string());
-        let t_aux_bytes = std::fs::read(&t_aux_path)
+        let t_aux_bytes = fs::read(&t_aux_path)
             .with_context(|| format!("could not read file t_aux={:?}", t_aux_path))?;
 
         let mut res: TemporaryAux<Tree, DefaultPieceHasher> = deserialize(&t_aux_bytes)?;
@@ -583,112 +709,16 @@ where
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use bellperson::bls::Fr;
-    use ff::Field;
-    use rand::SeedableRng;
-    use rand_xorshift::XorShiftRng;
-    use storage_proofs::fr32::bytes_into_fr;
-
-    use crate::constants::*;
-    use crate::types::SectorSize;
-
-    #[test]
-    fn test_verify_seal_fr32_validation() {
-        let convertible_to_fr_bytes = [0; 32];
-        let out = bytes_into_fr(&convertible_to_fr_bytes);
-        assert!(out.is_ok(), "tripwire");
-
-        let not_convertible_to_fr_bytes = [255; 32];
-        let out = bytes_into_fr(&not_convertible_to_fr_bytes);
-        assert!(out.is_err(), "tripwire");
-
-        let arbitrary_porep_id = [87; 32];
-        {
-            let result = verify_seal::<DefaultOctLCTree>(
-                PoRepConfig {
-                    sector_size: SectorSize(SECTOR_SIZE_2_KIB),
-                    partitions: PoRepProofPartitions(
-                        *POREP_PARTITIONS
-                            .read()
-                            .expect("POREP_PARTITIONS poisoned")
-                            .get(&SECTOR_SIZE_2_KIB)
-                            .expect("unknown sector size"),
-                    ),
-                    porep_id: arbitrary_porep_id,
-                },
-                not_convertible_to_fr_bytes,
-                convertible_to_fr_bytes,
-                [0; 32],
-                SectorId::from(0),
-                [0; 32],
-                [0; 32],
-                &[],
-            );
-
-            if let Err(err) = result {
-                let needle = "Invalid all zero commitment";
-                let haystack = format!("{}", err);
-
-                assert!(
-                    haystack.contains(needle),
-                    format!("\"{}\" did not contain \"{}\"", haystack, needle)
-                );
-            } else {
-                panic!("should have failed comm_r to Fr32 conversion");
-            }
-        }
-
-        {
-            let result = verify_seal::<DefaultOctLCTree>(
-                PoRepConfig {
-                    sector_size: SectorSize(SECTOR_SIZE_2_KIB),
-                    partitions: PoRepProofPartitions(
-                        *POREP_PARTITIONS
-                            .read()
-                            .expect("POREP_PARTITIONS poisoned")
-                            .get(&SECTOR_SIZE_2_KIB)
-                            .expect("unknown sector size"),
-                    ),
-                    porep_id: arbitrary_porep_id,
-                },
-                convertible_to_fr_bytes,
-                not_convertible_to_fr_bytes,
-                [0; 32],
-                SectorId::from(0),
-                [0; 32],
-                [0; 32],
-                &[],
-            );
-
-            if let Err(err) = result {
-                let needle = "Invalid all zero commitment";
-                let haystack = format!("{}", err);
-
-                assert!(
-                    haystack.contains(needle),
-                    format!("\"{}\" did not contain \"{}\"", haystack, needle)
-                );
-            } else {
-                panic!("should have failed comm_d to Fr32 conversion");
-            }
+fn read_aux(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    let range_reader = if is_qiniu_enabled() {
+        RangeReader::from_env(path.as_ref().to_str().expect("Key must be UTF-8 encoded"))
+    } else {
+        None
+    };
+    if let Some(range_reader) = range_reader.as_ref() {
+        if !path.as_ref().exists() {
+            return range_reader.download();
         }
     }
-
-    #[test]
-    fn test_random_domain_element() {
-        let rng = &mut XorShiftRng::from_seed(crate::TEST_SEED);
-
-        for _ in 0..100 {
-            let random_el: DefaultTreeDomain = Fr::random(rng).into();
-            let mut randomness = [0u8; 32];
-            randomness.copy_from_slice(AsRef::<[u8]>::as_ref(&random_el));
-            let back: DefaultTreeDomain = as_safe_commitment(&randomness, "test")
-                .expect("failed to get domain from randomness");
-            assert_eq!(back, random_el);
-        }
-    }
+    std::fs::read(path)
 }
