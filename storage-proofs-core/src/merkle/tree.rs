@@ -74,8 +74,8 @@ pub struct MerkleTreeWrapper<
     H: Hasher,
     S: Store<<H as Hasher>::Domain>,
     U: PoseidonArity,
-    V: PoseidonArity = U0,
-    W: PoseidonArity = U0,
+    V: PoseidonArity = typenum::U0,
+    W: PoseidonArity = typenum::U0,
 > {
     pub inner: MerkleTree<<H as Hasher>::Domain, <H as Hasher>::Function, S, U, V, W>,
     pub h: PhantomData<H>,
