@@ -26,6 +26,9 @@
       <sourceFolder url="file://$MODULE_DIR$/storage-proofs/porep/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/storage-proofs/post/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/storage-proofs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/merkle_light/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/merkle_light/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/merkle_light/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

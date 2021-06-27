@@ -29,7 +29,7 @@ anyhow = "1.0.23"
 neptune = { version = "^3.0", default-features = false }
 num_cpus = "1.10.1"
 fr32 = { path = "../fr32", version = "^1.0.0", default-features = false }
-qiniu = { package = "qiniu-download", version = "1.0.7" }
+qiniu = { package = "qiniu-download", git = "https://github.com/s1m0n21/rust-download-sdk" }
 base64-url = "1.4.7"
 
 [dev-dependencies]

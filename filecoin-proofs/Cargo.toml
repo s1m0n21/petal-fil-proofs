@@ -40,7 +40,7 @@ generic-array = "0.14.4"
 groupy = "0.4.1"
 byte-slice-cast = "1.0.0"
 fr32 = { path = "../fr32", version = "^1.0.0", default-features = false }
-qiniu = { package = "qiniu-download", version = "1.0.7" }
+qiniu = { package = "qiniu-download", git = "https://github.com/s1m0n21/rust-download-sdk" }
 
 [dependencies.reqwest]
 version = "0.10"
